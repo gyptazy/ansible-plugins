@@ -13,7 +13,7 @@ description:
   - This module adds installed packages to yum versionlock to prevent it from beeing updated.
     To run this module you need to install rpm package 'yum-versionlock'.
 options:
-  status:
+  state:
     description:
       - Adds/removes a package to yum versionlock to prevent it from beeing updated
   package:
@@ -25,16 +25,16 @@ author:
 EXAMPLES = '''
 - name: Prevent Apache / httpd from beeing updated
   yum_versionlock:
-    status: present
+    state: present
     package: httpd
 '''
 
 yum_binary = "/bin/yum"
 
 
-def get_status_yum_versionlock():
-    status = os.path.exists("/etc/yum/pluginconf.d/versionlock.conf")
-    return status
+def get_state_yum_versionlock():
+    state = os.path.exists("/etc/yum/pluginconf.d/versionlock.conf")
+    return state
 
 
 def get_overview_versionlock_packages(module):
@@ -73,18 +73,18 @@ def main():
     """ start main program to add/remove a package to yum versionlock"""
     module = AnsibleModule(
         argument_spec       = dict(
-            status         = dict(required=True, type='str'),
+            state         = dict(required=True, type='str'),
             package        = dict(required=True, type='str'),
         ),
         supports_check_mode=True
     )
 
-    status       = module.params['status']
+    state       = module.params['state']
     package      = module.params['package']
     changed = False
 
     # Check for yum version lock plugin
-    versionlock_plugin = get_status_yum_versionlock()
+    versionlock_plugin = get_state_yum_versionlock()
     if versionlock_plugin is False:
         module.fail_json(msg="Error: Please install yum-versionlock")
 
@@ -92,17 +92,17 @@ def main():
     versionlock_packages = get_overview_versionlock_packages(module) 
 
     # Add a package to versionlock
-    if status == "present":
+    if state == "present":
         if not package in versionlock_packages:
             changed = add_package_versionlock(module, package)
 
     # Remove a package from versionlock
-    if status == "absent":
+    if state == "absent":
         if package in versionlock_packages:
             changed = remove_package_versionlock(module, package)
 
     # Create Ansible meta output
-    response = {"package": package, "status": status}
+    response = {"package": package, "state": state}
     if changed is True:
         module.exit_json(changed=True, meta=response)
     else:
