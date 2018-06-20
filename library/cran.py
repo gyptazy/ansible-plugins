@@ -83,7 +83,7 @@ def remove_package_cran(module, package):
 def main():
     """ Start main program to add/remove a package from cran """
     module = AnsibleModule(
-        argument_spec       = dict(
+        argument_spec     = dict(
             state         = dict(required=True,  type='str'),
             package       = dict(required=True,  type='str'),
             repository    = dict(required=False, type='str', default='https://cran.rstudio.com/'),
@@ -92,7 +92,7 @@ def main():
     )
 
 
-    state       = module.params['state']
+    state        = module.params['state']
     package      = module.params['package']
     repository   = module.params['repository']
     changed = False
