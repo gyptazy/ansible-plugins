@@ -1,114 +1,148 @@
-#!/usr/bin/env python
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
 
 # Copyright (c) 2018, Florian Paul Hoberg <florian.hoberg@credativ.de>
+# Written by Florian Paul Hoberg <florian.hoberg@credativ.de>
 
-from ansible.module_utils.basic import *
+# GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
+
+from __future__ import absolute_import, division, print_function
+__metaclass__ = type
+
+ANSIBLE_METADATA = {'metadata_version': '1.1',
+                    'status': ['preview'],
+                    'supported_by': 'community'}
 
 DOCUMENTATION = '''
 ---
 module: cran
-short_description: Manages packapges for Microsoft R
+version_added: 2.7
+short_description: (Un)installs packages for Microsoft R Open (CRAN)
 description:
-  - This module adds support to manage additional packages for Microsoft R
-    also known as "cran".
-    To run this module you need to have Microsoft R Open installed.
+     - This module (un)installs packages for Microsoft R Open (CRAN).
 options:
-  state:
-    description:
-      - Adds/removes a package from CRAN
-    options:
-      - present
-      - absent
   package:
     description:
-      - Wildcard package name (e.g. 'vioplot')
-  repository:
+      - Package name like C(vioplot).
+  state:
     description:
-      - Define a custom CRAN repository
-    default: https://cran.rstudio.com/
+      - Whether to lock C(present) or unlock C(absent) package(s).
+    choices: [ present, absent ]
+    default: present
+# informational: requirements for nodes
+requirements:
+- Microsoft R Open
 author:
-- Florian Paul Hoberg <florian.hoberg@credativ.de>
+    - '"Florian Paul Hoberg (@florianpaulhoberg)" <florian.hoberg@credativ.de>'
 '''
+
 EXAMPLES = '''
-- name: Install CRAN module vioplot 
+- name: Install "vioplot" from CRAN
   cran:
     state: present
     package: vioplot
-- name: Install custom CRAN module foo 
+- name: Install "foobar" from custom CRAN repo
   cran:
     state: present
-    package: foo
-    repository: https://files.hoberg.ch/cran/ 
+    package: foobar
+    repo: https://cran.hoberg.ch
 '''
 
-MSR_BINARY = "/usr/bin/Rscript"
+RETURN = '''
+package:
+    description: name of used package
+    returned: everytime
+    type: string
+    sample: vioplot
+state:
+    description: state of used package
+    returned: everytime
+    type: string
+    sample: present
+'''
+
+from ansible.module_utils.basic import AnsibleModule
 
 
-def list_package_cran(module, package):
+def get_rscript_path(module):
+    """ Get path to Rscript """
+    rscript_binary = module.get_bin_path('Rscript')
+    if rscript_binary is not "Null":
+        return rscript_binary
+    else:
+        module.fail_json(msg="Error: Could not find path to Rscript binary.")
+
+
+def list_package_cran(module, rscript_binary, package):
     """ List package from cran """
-    rc, out, err = module.run_command("%s --slave -e 'p <- installed.packages(); cat(p[p[,1] == \"%s\",1])'" 
-                                      % (MSR_BINARY, package))
-    if out == package: 
+    rc_code, out, err = module.run_command("%s --slave -e \
+                                           'p <- installed.packages(); cat(p[p[,1] == \"%s\",1])'"
+                                           % (rscript_binary, package))
+    if out == package:
         package = True
         return package
     else:
         package = False
         return package
-    if not rc is 0:
-        module.fail_json(msg="Error: " + str(err))
+    if not rc_code == 0:
+        module.fail_json(msg="Error: " + str(err) + str(out))
 
 
-def add_package_cran(module, package, repository):
+def add_package_cran(module, rscript_binary, package, repository):
     """ Add package from cran """
-    rc, out, err = module.run_command("%s --slave -e 'install.packages(pkgs=\"%s\", repos=\"%s\")'" 
-                                      % (MSR_BINARY, package, repository))
-    if rc is 0: 
+    rc_code, out, err = module.run_command("%s --slave -e \
+                                           'install.packages(pkgs=\"%s\", repos=\"%s\")'"
+                                           % (rscript_binary, package, repository))
+    if rc_code == 0:
         changed = True
         return changed
     else:
-        module.fail_json(msg="Error: " + str(err))
+        module.fail_json(msg="Error: " + str(err) + str(out))
 
 
-def remove_package_cran(module, package):
+def remove_package_cran(module, rscript_binary, package):
     """ Remove package from cran """
-    rc, out, err = module.run_command("%s --slave -e 'remove.packages(pkgs=\"%s\")'" 
-                                      % (MSR_BINARY, package))
-    if rc is 0: 
+    rc_code, out, err = module.run_command("%s --slave -e \
+                                           'remove.packages(pkgs=\"%s\")'"
+                                           % (rscript_binary, package))
+    if rc_code == 0:
         changed = True
         return changed
     else:
-        module.fail_json(msg="Error: " + str(err))
+        module.fail_json(msg="Error: " + str(err) + str(out))
 
 
 def main():
     """ Start main program to add/remove a package from cran """
     module = AnsibleModule(
-        argument_spec     = dict(
-            state         = dict(required=True,  type='str'),
-            package       = dict(required=True,  type='str'),
-            repository    = dict(required=False, type='str', default='https://cran.rstudio.com/'),
+        argument_spec=dict(
+            state=dict(default='present', choices=['present', 'absent']),
+            package=dict(required=True, type='str'),
+            repository=dict(required=False, type='str', default='https://cran.rstudio.com/'),
         ),
         supports_check_mode=True
     )
 
-
-    state        = module.params['state']
-    package      = module.params['package']
-    repository   = module.params['repository']
+    state = module.params['state']
+    package = module.params['package']
+    repository = module.params['repository']
     changed = False
 
+    # Get path of RScript
+    rscript_binary = get_rscript_path(module)
+
     # Check if package is already installed
-    cran_package = list_package_cran(module, package)
+    cran_package = list_package_cran(module, rscript_binary, package)
 
     # Add a package from CRAN
     if state == "present":
         if not cran_package:
-            changed = add_package_cran(module, package, repository)
+            changed = add_package_cran(module, rscript_binary, package, repository)
 
-    # Remove a package from CRAN 
+    # Remove a package from CRAN
     if state == "absent":
         if cran_package:
-            changed = remove_package_cran(module, package)
+            changed = remove_package_cran(module, rscript_binary, package)
 
     # Create Ansible meta output
     response = {"package": package, "state": state}
@@ -116,6 +150,7 @@ def main():
         module.exit_json(changed=True, meta=response)
     else:
         module.exit_json(changed=False, meta=response)
+
 
 if __name__ == '__main__':
     main()
