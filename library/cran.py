@@ -23,7 +23,7 @@ description:
 options:
   package:
     description:
-      - Package name like C(vioplot).
+      - Package names(s) like C(vioplot), multiple values separated by space.
   state:
     description:
       - Whether to lock C(present) or unlock C(absent) package(s).
@@ -41,6 +41,10 @@ EXAMPLES = '''
   cran:
     state: present
     package: vioplot
+- name: Install multiple packages from CRAN
+  cran:
+    state: present
+    package: vioplot A3
 - name: Install "foobar" from custom CRAN repo
   cran:
     state: present
@@ -67,10 +71,10 @@ from ansible.module_utils.basic import AnsibleModule
 def get_rscript_path(module):
     """ Get path to Rscript """
     rscript_binary = module.get_bin_path('Rscript')
-    if rscript_binary is not "Null":
+    if rscript_binary.endswith('Rscript'):
         return rscript_binary
     else:
-        module.fail_json(msg="Error: Could not find path to Rscript binary.")
+        module.fail_json(msg='Error: Could not find path to Rscript binary.')
 
 
 def list_package_cran(module, rscript_binary, package):
@@ -78,14 +82,14 @@ def list_package_cran(module, rscript_binary, package):
     rc_code, out, err = module.run_command("%s --slave -e \
                                            'p <- installed.packages(); cat(p[p[,1] == \"%s\",1])'"
                                            % (rscript_binary, package))
+    if rc_code != 0:
+        module.fail_json(msg='Error: ' + str(err) + str(out))
     if out == package:
-        package = True
-        return package
+        changed = True
+        return changed
     else:
-        package = False
-        return package
-    if not rc_code == 0:
-        module.fail_json(msg="Error: " + str(err) + str(out))
+        changed = False
+        return changed
 
 
 def add_package_cran(module, rscript_binary, package, repository):
@@ -93,11 +97,12 @@ def add_package_cran(module, rscript_binary, package, repository):
     rc_code, out, err = module.run_command("%s --slave -e \
                                            'install.packages(pkgs=\"%s\", repos=\"%s\")'"
                                            % (rscript_binary, package, repository))
-    if rc_code == 0:
+    # Check for string because on an error exit_code will be 0
+    if 'DONE ('+package+')' in err:
         changed = True
         return changed
     else:
-        module.fail_json(msg="Error: " + str(err) + str(out))
+        module.fail_json(msg='Error: ' + str(err) + str(out) + str(rc_code))
 
 
 def remove_package_cran(module, rscript_binary, package):
@@ -109,7 +114,7 @@ def remove_package_cran(module, rscript_binary, package):
         changed = True
         return changed
     else:
-        module.fail_json(msg="Error: " + str(err) + str(out))
+        module.fail_json(msg='Error: ' + str(err) + str(out))
 
 
 def main():
@@ -131,25 +136,32 @@ def main():
     # Get path of RScript
     rscript_binary = get_rscript_path(module)
 
-    # Check if package is already installed
-    cran_package = list_package_cran(module, rscript_binary, package)
+    # Support for multiple packages from string
+    packages = package.split()
 
-    # Add a package from CRAN
-    if state == "present":
-        if not cran_package:
-            changed = add_package_cran(module, rscript_binary, package, repository)
+    # Loop for every single package in packages list
+    for single_package in packages:
 
-    # Remove a package from CRAN
-    if state == "absent":
-        if cran_package:
-            changed = remove_package_cran(module, rscript_binary, package)
+        # Check if package is already installed
+        cran_package = list_package_cran(module, rscript_binary, single_package)
+
+        # Add a package from CRAN
+        if state == "present":
+            if not cran_package:
+                change_state = add_package_cran(module, rscript_binary, single_package, repository)
+                if changed is not True:
+                    changed = change_state
+
+        # Remove a package from CRAN
+        if state == "absent":
+            if cran_package:
+                change_state = remove_package_cran(module, rscript_binary, single_package)
+                if changed is not True:
+                    changed = change_state
 
     # Create Ansible meta output
-    response = {"package": package, "state": state}
-    if changed is True:
-        module.exit_json(changed=True, meta=response)
-    else:
-        module.exit_json(changed=False, meta=response)
+    response = {'package': package, 'state': state}
+    module.exit_json(changed=changed, meta=response)
 
 
 if __name__ == '__main__':
