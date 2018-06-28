@@ -85,7 +85,7 @@ def list_package_cran(module, rscript_binary, package):
     if rc_code != 0:
         module.fail_json(msg='Error: ' + str(err) + str(out))
     if out == package:
-        return True 
+        return True
 
 
 def add_package_cran(module, rscript_binary, package, repository):
