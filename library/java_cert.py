@@ -46,6 +46,11 @@ options:
       - Password for importing from PKCS12 keystore.
     default: ''
     version_added: "2.4"
+  force_update:
+    description:
+      - Forces overwrite of a certificate with an existing alias name.
+    default: False
+    version_added: "2.8"
   pkcs12_alias:
     description:
       - Alias in the PKCS12 keystore.
@@ -254,7 +259,7 @@ def import_pkcs12_path(module, executable, path, keystore_path, keystore_pass, p
         return module.fail_json(msg=import_out, rc=import_rc, cmd=import_cmd)
 
 
-def delete_cert(module, executable, keystore_path, keystore_pass, alias):
+def delete_cert(module, executable, keystore_path, keystore_pass, alias, module_exit=False):
     ''' Delete certificate identified with alias from keystore on keystore_path '''
     del_cmd = ("%s -delete -keystore '%s' -storepass '%s' "
                "-alias '%s'") % (executable, keystore_path, keystore_pass, alias)
@@ -267,9 +272,11 @@ def delete_cert(module, executable, keystore_path, keystore_pass, alias):
 
     diff = {'before': '%s\n' % alias, 'after': None}
 
-    return module.exit_json(changed=True, msg=del_out,
-                            rc=del_rc, cmd=del_cmd, stdout=del_out,
-                            error=del_err, diff=diff)
+    # Check if module will need to exit
+    if not module_exit:
+        return module.exit_json(changed=True, msg=del_out,
+                                rc=del_rc, cmd=del_cmd, stdout=del_out,
+                                error=del_err, diff=diff)
 
 
 def test_keytool(module, executable):
@@ -299,6 +306,7 @@ def main():
         pkcs12_password=dict(type='str', no_log=True),
         pkcs12_alias=dict(type='str'),
         cert_alias=dict(type='str'),
+        force_update=dict(type='bool', default=False),
         cert_port=dict(type='int', default='443'),
         keystore_path=dict(type='path'),
         keystore_pass=dict(type='str', required=True, no_log=True),
@@ -326,6 +334,7 @@ def main():
     pkcs12_pass = module.params.get('pkcs12_password', '')
     pkcs12_alias = module.params.get('pkcs12_alias', '1')
 
+    force_update = module.params.get('force_update')
     cert_alias = module.params.get('cert_alias') or url
     trust_cacert = module.params.get('trust_cacert')
 
@@ -353,18 +362,51 @@ def main():
             delete_cert(module, executable, keystore_path, keystore_pass, cert_alias)
 
     elif state == 'present':
-        if not cert_present:
-            if pkcs12_path:
+        if pkcs12_path:
+            if not cert_present:
                 import_pkcs12_path(module, executable, pkcs12_path, keystore_path,
                                    keystore_pass, pkcs12_pass, pkcs12_alias, cert_alias)
+            else:
+                if force_update:
+                    delete_cert(module, executable, keystore_path, keystore_pass, cert_alias, force_update)
+                    import_pkcs12_path(module, executable, pkcs12_path, keystore_path,
+                                       keystore_pass, pkcs12_pass, pkcs12_alias, cert_alias)
+                    module.exit_json(changed=True)
+                else:
+                    module.fail_json(changed=False,
+                                     msg="Certificate alias %s is already present. Use force_update to overwrite."
+                                     % (cert_alias))
 
-            if path:
+        if path:
+            if not cert_present:
                 import_cert_path(module, executable, path, keystore_path,
-                                 keystore_pass, cert_alias, trust_cacert)
+                             keystore_pass, cert_alias, trust_cacert)
+            else:
+                if force_update:
+                    delete_cert(module, executable, keystore_path, keystore_pass, cert_alias, force_update)
+                    import_cert_path(module, executable, path, keystore_path,
+                                     keystore_pass, cert_alias, trust_cacert)
+                    module.exit_json(changed=True)
+                else:
+                    module.fail_json(changed=False,
+                                     msg="Certificate alias %s is already present. Use force_update to overwrite."
+                                     % (cert_alias))
 
-            if url:
+        if url:
+            if not cert_present:
                 import_cert_url(module, executable, url, port, keystore_path,
                                 keystore_pass, cert_alias, trust_cacert)
+            else:
+                if force_update:
+                    delete_cert(module, executable, keystore_path, keystore_pass, cert_alias, force_update)
+                    import_cert_url(module, executable, url, port, keystore_path,
+                                    keystore_pass, cert_alias, trust_cacert)
+                    module.exit_json(changed=True)
+                else:
+                    module.fail_json(changed=False,
+                                     msg="Certificate alias %s is already present. Use force_update to overwrite."
+                                     % (cert_alias))
+
 
     module.exit_json(changed=False)
 
