@@ -15,117 +15,265 @@ ANSIBLE_METADATA = {'metadata_version': '1.0',
 
 DOCUMENTATION = '''
 ---
-module: yum_versionlock
-short_description: Locks/prevents an installed package from beeing updates by yum
+module: yum_versionlock / dnf_versionlock
+short_description: Locks/prevents packages from beeing updated/installed by yum or dnf
 description:
-  - This module adds installed packages to yum versionlock to prevent it from beeing updated.
-    To run this module you need to install rpm package 'yum-versionlock'.
+    - This module manages versionlock in yum or dnf environment to prevent it from beeing installed/updated.
+      To run this module you need to install rpm package 'yum-plugin-versionlock' or 'dnf-versionlock' depending of the package manager used.
+    - 'present' state will include the package in the locked list to prevent updates
+    - 'excluded' state will include the package in the exclusion list to prevent installations & updates.
+    - A package can be added in both lists using the state 'present' and 'excluded'
 options:
-  state:
-    description:
-      - Adds/removes a package to yum versionlock to prevent it from beeing updated
-  version_added: "2.7"
-  package:
-    description:
-      - Wildcard package name (e.g. 'httpd')
-  version_added: "2.7"
+    state:
+        description:
+            - Add/exclude/remove a package to versionlock to prevent it from beeing installed/updated
+            - Clear yum versionlock database (2.10)
+        version_added: "2.7"
+    package:
+        description:
+            - Wildcard package name (e.g. 'httpd')
+            - 'package' accept wildcard format.
+        version_added: "2.7"
+    repo_mgr:
+        description:
+            - define the package manager to use to run the versionlock commands
+        default: based on the name of the module name (yum_versionlock or dnf_versionlock)
+        version_added: "2.10"
 # informational: requirements for nodes
+notes:
+    - Since version 2.10 the package is only require with the state: present/exclude/absent.
+    - The version 2.10 includes new states:
+    -- state: exclude - This prevent packages to be installed on the server
+    -- state: clear - This will clean the versionlock database
+    - The module will also return result from --check ansible option
 requirements:
-    - yum
-    - yum-versionlock
+    - yum / dnf
+    - yum-versionlock / dnf-versionlock
 author:
     - Florian Paul Hoberg <florian.hoberg@credativ.de>
 '''
 EXAMPLES = '''
+- name: Clear the dnf versionlock database
+  yum_versionlock:
+    state: clear
+    repo_mgr: dnf
 - name: Prevent Apache / httpd from beeing updated
   yum_versionlock:
     state: present
     package: httpd
+- name: Prevent nginx from beeing installed/updated
+  yum_versionlock:
+    state: exclude
+    package: nginx
+- name: Ensure python3* packages are not locked/excluded
+  yum_versionlock:
+    state: absent
+    package: python3*
 '''
 
-import os.path
+# Import 'os.path' to check versionlock config file
+# Import 're' to do search and strings substitution
+import os.path, re
 from ansible.module_utils.basic import AnsibleModule
 
-YUM_BINARY = "/bin/yum"
 
-
-def get_state_yum_versionlock():
-    """ Check for yum plugin dependency """
-    state = os.path.exists("/etc/yum/pluginconf.d/versionlock.conf")
+def get_state_versionlock(module, repo_cfg):
+    """ Check for plugin dependency """
+    state = os.path.exists(repo_cfg)
+    config_file = open(repo_cfg,"r")
+    for line in config_file.readlines():
+        if "enabled" in line:
+            enabled_state = line.split()[2]
+    if enabled_state != '1' and enabled_state != 'True':
+        module.warn("Warn: Plugin is installed but disabled ("+enabled_state+") in "+repo_cfg)
+    config_file.close
     return state
 
 
-def get_versionlock_packages(module):
-    """ Get an overview of all packages on yum versionlock """
-    rc_code, out, err = module.run_command("%s -q versionlock list"
-                                           % (YUM_BINARY))
+def get_packages(module, repo_mgr, list_type, package):
+    """ Get an overview of all packages available/installed """
+    rc_code, out, err = module.run_command("/usr/bin/%s -q list %s %s"
+                                           % (repo_mgr, list_type, package))
+    if rc_code is 0:
+        return out.splitlines()
+    else:
+        if rc_code == 1 and str(err) == 'Error: No matching Packages to list\n':
+            return out.splitlines()
+        else:
+            module.fail_json(msg="Unable to collect " + repo_mgr + " list " + list_type + " : " + str(err) + " - " + str(out))
+
+
+def fct_versionlock(module, repo_mgr, action, package=''):
+    """ Get an overview of all packages on versionlock """
+    if repo_mgr != 'dnf':
+        quiet_opt = '-q'
+    else:
+        quiet_opt = ''
+    rc_code, out, err = module.run_command("/usr/bin/%s %s versionlock %s %s"
+                                           % (repo_mgr, quiet_opt, action, package))
     if rc_code is 0:
         return out
     else:
         module.fail_json(msg="Error: " + str(err) + str(out))
 
+def check_pkg_versionlock(package, versionlock_packages):
+    versionlock_pkg = dict()
+    versionlock_pkg['matching'] = []
+    versionlock_pkg['different'] = []
+    #versionlock_pkg['tested'] = []
+    package_regex = re.sub('\*', '.*', package)
+    regex_search = re.compile('!?([0-9]+:)?%s-([0-9]+:)?[.\w]+\.\*' %package_regex)
+    for locked in versionlock_packages:
+        #versionlock_pkg['tested'].append(locked)
+        if regex_search.search(locked):
+            versionlock_pkg['matching'].append(locked)
+        else:
+            versionlock_pkg['different'].append(locked)
+    return versionlock_pkg
 
-def add_package_versionlock(module, package):
-    """ Add package to yum versionlock """
-    rc_code, out, err = module.run_command("%s -q versionlock add %s"
-                                           % (YUM_BINARY, package))
-    if rc_code is 0:
-        changed = True
-        return changed
-    else:
-        module.fail_json(msg="Error: " + str(err) + str(out))
-
-
-def remove_package_versionlock(module, package):
-    """ Remove package from yum versionlock """
-    rc_code, out, err = module.run_command("%s -q versionlock delete %s"
-                                           % (YUM_BINARY, package))
-    if rc_code is 0:
-        changed = True
-        return changed
-    else:
-        module.fail_json(msg="Error: " + str(err) + str(out))
+def check_state_pkg(package, List_to_check, versionlock_packages, check_type):
+    """ Verify that all desired installed packages are locked """
+    state_pkg = dict()
+    state_pkg['present'] = []
+    state_pkg['missing'] = []
+    # For debug purpose you can include the listed packages in the debug
+    #state_pkg['listed'] = []
+    missing_pkg_version = None
+    for is_checked in List_to_check:
+        if is_checked != 'Installed Packages' and is_checked != 'Available Packages':
+            # Split to concatenate name & version
+            pkg_split = is_checked.split()
+            if missing_pkg_version:
+                pkg_name = missing_pkg_version
+                pkg_version = pkg_split[0]
+                missing_pkg_version = None
+            else:
+                pkg_name = pkg_split[0].split('.')[0]
+                try:
+                    pkg_version = pkg_split[1]
+                except IndexError:
+                    missing_pkg_version = pkg_split[0].split('.')[0]
+            if pkg_version:
+                pkg_vers = pkg_name + '-' + pkg_version
+                # For debug purpose you can include the listed packages in the debug
+                #state_pkg['listed'].append(pkg_vers)
+                if check_type == 'installed':
+                    regex_search = re.compile('^([0-9]+:)?%s-([0-9]+:)?%s\.\*'%(pkg_name,pkg_version))
+                else:
+                    regex_search = re.compile('^\!([0-9]+:)?%s-([0-9]+:)?%s\.\*'%(pkg_name,pkg_version))
+                    # Init flag is_present
+                is_present = False
+                # search for the installed package in versionlock list
+                for locked in versionlock_packages:
+                    if regex_search.search(locked):
+                        is_present = True
+                if is_present:
+                    state_pkg['present'].append(pkg_vers)
+                else:
+                    state_pkg['missing'].append(pkg_vers)
+    return state_pkg
 
 
 def main():
-    """ start main program to add/remove a package to yum versionlock"""
+    """ start main program to add/exclude/delete a package to versionlock"""
+    default_mgr = __file__.split('_')[1]
     module = AnsibleModule(
         argument_spec=dict(
-            state=dict(required=True, type='str'),
-            package=dict(required=True, type='str'),
+            state=dict(required=True, type='str', choices=['present', 'excluded', 'absent', 'clear']),
+            package=dict(required=False, type='str'),
+            repo_mgr=dict(required=False, type='str', choices=['dnf', 'yum'], default=default_mgr),
         ),
-        supports_check_mode=False
+        supports_check_mode=True,
+        required_one_of=[['state']],
     )
 
     state = module.params['state']
     package = module.params['package']
-    changed = False
+    repo_mgr = module.params['repo_mgr']
 
-    # Check for yum version lock plugin
-    versionlock_plugin = get_state_yum_versionlock()
+    result = dict(
+        changed=False,
+        debug=dict(),
+        status=dict(),
+        diff=dict(),
+    )
+
+    # Check for the versionlock config file and if plugins is enabled
+    if repo_mgr == 'yum':
+        repo_cfg = "/etc/yum/pluginconf.d/versionlock.conf"
+        versionlock_prefix = '0:'
+    elif repo_mgr == 'dnf':
+        repo_cfg = "/etc/dnf/plugins/versionlock.conf"
+        versionlock_prefix = ''
+    versionlock_plugin = get_state_versionlock(module, repo_cfg)
+    result['debug']['is_versionlock_installed?'] = versionlock_plugin
+    result['debug']['Config_file'] = repo_cfg
     if versionlock_plugin is False:
-        module.fail_json(msg="Error: Please install yum-versionlock")
+        module.fail_json(msg="Error: Config file is missing. Please install "+repo_mgr+"-versionlock")
 
     # Get an overview of all packages that have a version lock
-    versionlock_packages = get_versionlock_packages(module)
+    # Raw version will be used for the --diff option
+    versionlock_packages_raw = fct_versionlock(module, repo_mgr, 'list')
+    regex_exclude = re.compile(r'^Last metadata expiration check:.*')
+    out_array = versionlock_packages_raw.splitlines()
+    versionlock_packages = [i for i in out_array if not regex_exclude.search(i)]
+    result['debug']['versionlock_packages'] = versionlock_packages
 
-    # Add a package to versionlock
-    if state == "present":
-        if not package in versionlock_packages:
-            changed = add_package_versionlock(module, package)
-
-    # Remove a package from versionlock
-    if state == "absent":
-        if package in versionlock_packages:
-            changed = remove_package_versionlock(module, package)
-
-    # Create Ansible meta output
-    response = {"package": package, "state": state}
-    if changed is True:
-        module.exit_json(changed=True, meta=response)
+    # Simply check if we should only clear the DB
+    if state == 'clear':
+        if versionlock_packages:
+            result['changed'] = True
+            if not module.check_mode:
+                result['status']['out'] = fct_versionlock(module, repo_mgr, 'clear')
     else:
-        module.exit_json(changed=False, meta=response)
+        # Check if package is defined
+        if package == None:
+            module.fail_json(msg="Error: 'package' option is required (except for 'clear' state)")
+        List_available = get_packages(module, repo_mgr, 'available', package)
+        List_installed = get_packages(module, repo_mgr, 'installed', package)
+        length_available = len(List_available)
+        # Add a package to versionlock
+        if state == "present":
+            locked_pkg = check_state_pkg(package, List_installed, versionlock_packages, 'installed')
+            result['debug']['locked_pkg_status'] = locked_pkg
+            if locked_pkg['missing']:
+                result['changed'] = True
+                after_str = versionlock_packages_raw
+                for array_field in locked_pkg['missing']:
+                    after_str = after_str + versionlock_prefix + str(array_field) + ".*\n"
+                result['diff']['before'] = versionlock_packages_raw
+                result['diff']['after'] = after_str
+                if not module.check_mode:
+                    result['status']['out'] = fct_versionlock(module, repo_mgr, 'add', package)
+        # Remove a package from versionlock
+        elif state == "absent":
+            included_versionlock = check_pkg_versionlock(package, versionlock_packages)
+            result['debug']['versionlock_status'] = included_versionlock
+            if included_versionlock['matching']:
+                result['changed'] = True
+                after_str = versionlock_packages_raw
+                for array_field in included_versionlock['matching']:
+                    after_str = re.sub('!?([0-9]+:)?%s\.\*\n' %array_field, '', after_str)
+                result['diff']['before'] = versionlock_packages_raw
+                result['diff']['after'] = after_str
+                if not module.check_mode:
+                    result['debug']['out'] = fct_versionlock(module, repo_mgr, 'delete', package)
+        elif state == "excluded":
+            available_pkgs = check_state_pkg(package, List_available, versionlock_packages, 'excluded')
+            installed_pkgs = check_state_pkg(package, List_installed, versionlock_packages, 'excluded')
+            result['debug']['available_pkg_status'] = available_pkgs
+            result['debug']['installed_pkg_status'] = installed_pkgs
+            if length_available != 0 or available_pkgs['missing'] or installed_pkgs['missing']:
+                result['changed'] = True
+                after_str = versionlock_packages_raw
+                for array_field in installed_pkgs['missing'] + available_pkgs['missing'] :
+                    after_str = after_str + '!' + versionlock_prefix + str(array_field) + '.*\n'
+                result['diff']['before'] = versionlock_packages_raw
+                result['diff']['after'] = after_str
+                if not module.check_mode:
+                    result['status']['out'] = fct_versionlock(module, repo_mgr,'exclude', package)
 
+    module.exit_json(**result)
 
 if __name__ == '__main__':
     main()
