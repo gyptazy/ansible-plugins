@@ -41,7 +41,7 @@ options:
         version_added: "2.10"
 # informational: requirements for nodes
 notes:
-    - Since version 2.10 the package is only require with the state: present/exclude/absent.
+    - Since version 2.10 the package is only require with the state: present/excluded/absent.
     - The version 2.10 includes new states:
     -- state: exclude - This prevent packages to be installed on the server
     -- state: clear - This will clean the versionlock database
@@ -63,7 +63,7 @@ EXAMPLES = '''
     package: httpd
 - name: Prevent nginx from beeing installed/updated
   yum_versionlock:
-    state: exclude
+    state: excluded
     package: nginx
 - name: Ensure python3* packages are not locked/excluded
   yum_versionlock:
@@ -73,20 +73,24 @@ EXAMPLES = '''
 
 # Import 'os.path' to check versionlock config file
 # Import 're' to do search and strings substitution
-import os.path, re
+# Import 'locale' to set the language to the default 'C'
+import os.path, re, locale
 from ansible.module_utils.basic import AnsibleModule
 
+# Set the language to 'C' as default
+locale.setlocale(locale.LC_ALL, 'C')
 
 def get_state_versionlock(module, repo_cfg):
     """ Check for plugin dependency """
     state = os.path.exists(repo_cfg)
-    config_file = open(repo_cfg,"r")
-    for line in config_file.readlines():
-        if "enabled" in line:
-            enabled_state = line.split()[2]
-    if enabled_state != '1' and enabled_state != 'True':
-        module.warn("Warn: Plugin is installed but disabled ("+enabled_state+") in "+repo_cfg)
-    config_file.close
+    if state:
+        config_file = open(repo_cfg,"r")
+        for line in config_file.readlines():
+            if "enabled" in line:
+                enabled_state = line.split()[2]
+        if enabled_state != '1' and enabled_state != 'True':
+            module.warn("Warn: Plugin is installed but disabled ("+enabled_state+") in "+repo_cfg)
+        config_file.close
     return state
 
 
@@ -131,7 +135,7 @@ def check_pkg_versionlock(package, versionlock_packages):
             versionlock_pkg['different'].append(locked)
     return versionlock_pkg
 
-def check_state_pkg(package, List_to_check, versionlock_packages, check_type):
+def check_state_pkg(package, list_to_check, versionlock_packages, check_type):
     """ Verify that all desired installed packages are locked """
     state_pkg = dict()
     state_pkg['present'] = []
@@ -139,7 +143,7 @@ def check_state_pkg(package, List_to_check, versionlock_packages, check_type):
     # For debug purpose you can include the listed packages in the debug
     #state_pkg['listed'] = []
     missing_pkg_version = None
-    for is_checked in List_to_check:
+    for is_checked in list_to_check:
         if is_checked != 'Installed Packages' and is_checked != 'Available Packages':
             # Split to concatenate name & version
             pkg_split = is_checked.split()
@@ -175,7 +179,7 @@ def check_state_pkg(package, List_to_check, versionlock_packages, check_type):
 
 
 def main():
-    """ start main program to add/exclude/delete a package to versionlock"""
+    """ Start main program to add/exclude/delete a package in versionlock"""
     default_mgr = __file__.split('_')[1]
     module = AnsibleModule(
         argument_spec=dict(
@@ -200,16 +204,24 @@ def main():
 
     # Check for the versionlock config file and if plugins is enabled
     if repo_mgr == 'yum':
-        repo_cfg = "/etc/yum/pluginconf.d/versionlock.conf"
-        versionlock_prefix = '0:'
+        repo_plugin_folder = "/etc/yum/pluginconf.d"
+        # In RHEL8 / Centos8, dnf create a link for the yum folder.
+        # But the running command is dnf as the package yum_versionlock doesn't exist anymore.
+        if os.path.islink(repo_plugin_folder):
+            repo_plugin_folder = "/etc/dnf/plugins"
+            repo_mgr = 'dnf'
     elif repo_mgr == 'dnf':
-        repo_cfg = "/etc/dnf/plugins/versionlock.conf"
-        versionlock_prefix = ''
+        repo_plugin_folder = "/etc/dnf/plugins"
+    repo_cfg = repo_plugin_folder + "/versionlock.conf"
     versionlock_plugin = get_state_versionlock(module, repo_cfg)
     result['debug']['is_versionlock_installed?'] = versionlock_plugin
     result['debug']['Config_file'] = repo_cfg
     if versionlock_plugin is False:
         module.fail_json(msg="Error: Config file is missing. Please install "+repo_mgr+"-versionlock")
+    if repo_mgr == 'yum':
+        versionlock_prefix = '0:'
+    elif repo_mgr == 'dnf':
+        versionlock_prefix = ''
 
     # Get an overview of all packages that have a version lock
     # Raw version will be used for the --diff option
@@ -229,12 +241,12 @@ def main():
         # Check if package is defined
         if package == None:
             module.fail_json(msg="Error: 'package' option is required (except for 'clear' state)")
-        List_available = get_packages(module, repo_mgr, 'available', package)
-        List_installed = get_packages(module, repo_mgr, 'installed', package)
-        length_available = len(List_available)
+        list_available = get_packages(module, repo_mgr, 'available', package)
+        list_installed = get_packages(module, repo_mgr, 'installed', package)
+        length_available = len(list_available)
         # Add a package to versionlock
         if state == "present":
-            locked_pkg = check_state_pkg(package, List_installed, versionlock_packages, 'installed')
+            locked_pkg = check_state_pkg(package, list_installed, versionlock_packages, 'installed')
             result['debug']['locked_pkg_status'] = locked_pkg
             if locked_pkg['missing']:
                 result['changed'] = True
@@ -259,8 +271,8 @@ def main():
                 if not module.check_mode:
                     result['debug']['out'] = fct_versionlock(module, repo_mgr, 'delete', package)
         elif state == "excluded":
-            available_pkgs = check_state_pkg(package, List_available, versionlock_packages, 'excluded')
-            installed_pkgs = check_state_pkg(package, List_installed, versionlock_packages, 'excluded')
+            available_pkgs = check_state_pkg(package, list_available, versionlock_packages, 'excluded')
+            installed_pkgs = check_state_pkg(package, list_installed, versionlock_packages, 'excluded')
             result['debug']['available_pkg_status'] = available_pkgs
             result['debug']['installed_pkg_status'] = installed_pkgs
             if length_available != 0 or available_pkgs['missing'] or installed_pkgs['missing']:
