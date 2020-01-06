@@ -73,12 +73,12 @@ EXAMPLES = '''
 
 # Import 'os.path' to check versionlock config file
 # Import 're' to do search and strings substitution
-# Import 'locale' to set the language to the default 'C'
-import os.path, re, locale
+import os.path, re
 from ansible.module_utils.basic import AnsibleModule
 
-# Set the language to 'C' as default
-locale.setlocale(locale.LC_ALL, 'C')
+# Define a variable to set the language to 'C' as default
+ENV_LOCALE = {'LC_ALL': 'C'}
+
 
 def get_state_versionlock(module, repo_cfg):
     """ Check for plugin dependency """
@@ -89,7 +89,7 @@ def get_state_versionlock(module, repo_cfg):
             if "enabled" in line:
                 enabled_state = line.split()[2]
         if enabled_state != '1' and enabled_state != 'True':
-            module.warn("Warn: Plugin is installed but disabled ("+enabled_state+") in "+repo_cfg)
+            module.warn("Warn: Plugin is installed but disabled ("+enabled_state+") in " + repo_cfg)
         config_file.close
     return state
 
@@ -97,7 +97,7 @@ def get_state_versionlock(module, repo_cfg):
 def get_packages(module, repo_mgr, list_type, package):
     """ Get an overview of all packages available/installed """
     rc_code, out, err = module.run_command("/usr/bin/%s -q list %s %s"
-                                           % (repo_mgr, list_type, package))
+                                           % (repo_mgr, list_type, package), environ_update=ENV_LOCALE)
     if rc_code is 0:
         return out.splitlines()
     else:
@@ -114,11 +114,15 @@ def fct_versionlock(module, repo_mgr, action, package=''):
     else:
         quiet_opt = ''
     rc_code, out, err = module.run_command("/usr/bin/%s %s versionlock %s %s"
-                                           % (repo_mgr, quiet_opt, action, package))
+                                           % (repo_mgr, quiet_opt, action, package), environ_update=ENV_LOCALE)
     if rc_code is 0:
-        return out
+        regex_exclude = re.compile(r'^(!)?(\d+:)?(\w+-)+(\d+:)?\d\S\S+')
+        out_array = out.splitlines()
+        versionlock_packages = [i for i in out_array if regex_exclude.search(i)]
+        return versionlock_packages
     else:
         module.fail_json(msg="Error: " + str(err) + str(out))
+
 
 def check_pkg_versionlock(package, versionlock_packages):
     versionlock_pkg = dict()
@@ -126,7 +130,7 @@ def check_pkg_versionlock(package, versionlock_packages):
     versionlock_pkg['different'] = []
     #versionlock_pkg['tested'] = []
     package_regex = re.sub('\*', '.*', package)
-    regex_search = re.compile('!?([0-9]+:)?%s-([0-9]+:)?[.\w]+\.\*' %package_regex)
+    regex_search = re.compile('!?(\d+:)?%s-(\d+:)?[.\w]+\.\*' %package_regex)
     for locked in versionlock_packages:
         #versionlock_pkg['tested'].append(locked)
         if regex_search.search(locked):
@@ -134,6 +138,7 @@ def check_pkg_versionlock(package, versionlock_packages):
         else:
             versionlock_pkg['different'].append(locked)
     return versionlock_pkg
+
 
 def check_state_pkg(package, list_to_check, versionlock_packages, check_type):
     """ Verify that all desired installed packages are locked """
@@ -162,9 +167,9 @@ def check_state_pkg(package, list_to_check, versionlock_packages, check_type):
                 # For debug purpose you can include the listed packages in the debug
                 #state_pkg['listed'].append(pkg_vers)
                 if check_type == 'installed':
-                    regex_search = re.compile('^([0-9]+:)?%s-([0-9]+:)?%s\.\*'%(pkg_name,pkg_version))
+                    regex_search = re.compile('^(\d+:)?%s-(\d+:)?%s\.\*'%(pkg_name,pkg_version))
                 else:
-                    regex_search = re.compile('^\!([0-9]+:)?%s-([0-9]+:)?%s\.\*'%(pkg_name,pkg_version))
+                    regex_search = re.compile('^\!(\d+:)?%s-(\d+:)?%s\.\*'%(pkg_name,pkg_version))
                     # Init flag is_present
                 is_present = False
                 # search for the installed package in versionlock list
@@ -197,10 +202,11 @@ def main():
 
     result = dict(
         changed=False,
-        debug=dict(),
         status=dict(),
         diff=dict(),
     )
+
+    debug = dict()
 
     # Check for the versionlock config file and if plugins is enabled
     if repo_mgr == 'yum':
@@ -214,22 +220,21 @@ def main():
         repo_plugin_folder = "/etc/dnf/plugins"
     repo_cfg = repo_plugin_folder + "/versionlock.conf"
     versionlock_plugin = get_state_versionlock(module, repo_cfg)
-    result['debug']['is_versionlock_installed?'] = versionlock_plugin
-    result['debug']['Config_file'] = repo_cfg
+    debug['is_versionlock_installed?'] = versionlock_plugin
+    debug['Config_file'] = repo_cfg
     if versionlock_plugin is False:
-        module.fail_json(msg="Error: Config file is missing. Please install "+repo_mgr+"-versionlock")
+        module.fail_json(msg="Error: Config file '" + repo_cfg + "' is missing. Please install " + repo_mgr + "-versionlock")
     if repo_mgr == 'yum':
         versionlock_prefix = '0:'
     elif repo_mgr == 'dnf':
         versionlock_prefix = ''
 
     # Get an overview of all packages that have a version lock
-    # Raw version will be used for the --diff option
-    versionlock_packages_raw = fct_versionlock(module, repo_mgr, 'list')
-    regex_exclude = re.compile(r'^Last metadata expiration check:.*')
-    out_array = versionlock_packages_raw.splitlines()
-    versionlock_packages = [i for i in out_array if not regex_exclude.search(i)]
-    result['debug']['versionlock_packages'] = versionlock_packages
+    versionlock_packages = fct_versionlock(module, repo_mgr, 'list')
+    # Raw version will be used for the --diff option which only work with strings
+    versionlock_packages_raw = '\n'.join(versionlock_packages) + '\n'
+    debug['repo_manager_used'] = repo_mgr
+    debug['versionlock_packages'] = versionlock_packages
 
     # Simply check if we should only clear the DB
     if state == 'clear':
@@ -247,7 +252,7 @@ def main():
         # Add a package to versionlock
         if state == "present":
             locked_pkg = check_state_pkg(package, list_installed, versionlock_packages, 'installed')
-            result['debug']['locked_pkg_status'] = locked_pkg
+            debug['locked_pkg_status'] = locked_pkg
             if locked_pkg['missing']:
                 result['changed'] = True
                 after_str = versionlock_packages_raw
@@ -260,7 +265,7 @@ def main():
         # Remove a package from versionlock
         elif state == "absent":
             included_versionlock = check_pkg_versionlock(package, versionlock_packages)
-            result['debug']['versionlock_status'] = included_versionlock
+            debug['versionlock_status'] = included_versionlock
             if included_versionlock['matching']:
                 result['changed'] = True
                 after_str = versionlock_packages_raw
@@ -269,12 +274,12 @@ def main():
                 result['diff']['before'] = versionlock_packages_raw
                 result['diff']['after'] = after_str
                 if not module.check_mode:
-                    result['debug']['out'] = fct_versionlock(module, repo_mgr, 'delete', package)
+                    debug['out'] = fct_versionlock(module, repo_mgr, 'delete', package)
         elif state == "excluded":
             available_pkgs = check_state_pkg(package, list_available, versionlock_packages, 'excluded')
             installed_pkgs = check_state_pkg(package, list_installed, versionlock_packages, 'excluded')
-            result['debug']['available_pkg_status'] = available_pkgs
-            result['debug']['installed_pkg_status'] = installed_pkgs
+            debug['available_pkg_status'] = available_pkgs
+            debug['installed_pkg_status'] = installed_pkgs
             if length_available != 0 or available_pkgs['missing'] or installed_pkgs['missing']:
                 result['changed'] = True
                 after_str = versionlock_packages_raw
@@ -285,6 +290,7 @@ def main():
                 if not module.check_mode:
                     result['status']['out'] = fct_versionlock(module, repo_mgr,'exclude', package)
 
+    result['debug'] = debug
     module.exit_json(**result)
 
 if __name__ == '__main__':
