@@ -128,11 +128,9 @@ def check_pkg_versionlock(package, versionlock_packages):
     versionlock_pkg = dict()
     versionlock_pkg['matching'] = []
     versionlock_pkg['different'] = []
-    #versionlock_pkg['tested'] = []
     package_regex = re.sub('\*', '.*', package)
     regex_search = re.compile('!?(\d+:)?%s-(\d+:)?[.\w]+\.\*' %package_regex)
     for locked in versionlock_packages:
-        #versionlock_pkg['tested'].append(locked)
         if regex_search.search(locked):
             versionlock_pkg['matching'].append(locked)
         else:
@@ -145,8 +143,6 @@ def check_state_pkg(package, list_to_check, versionlock_packages, check_type):
     state_pkg = dict()
     state_pkg['present'] = []
     state_pkg['missing'] = []
-    # For debug purpose you can include the listed packages in the debug
-    #state_pkg['listed'] = []
     missing_pkg_version = None
     for is_checked in list_to_check:
         if is_checked != 'Installed Packages' and is_checked != 'Available Packages':
@@ -164,8 +160,6 @@ def check_state_pkg(package, list_to_check, versionlock_packages, check_type):
                     missing_pkg_version = pkg_split[0].split('.')[0]
             if pkg_version:
                 pkg_vers = pkg_name + '-' + pkg_version
-                # For debug purpose you can include the listed packages in the debug
-                #state_pkg['listed'].append(pkg_vers)
                 if check_type == 'installed':
                     regex_search = re.compile('^(\d+:)?%s-(\d+:)?%s\.\*'%(pkg_name,pkg_version))
                 else:
