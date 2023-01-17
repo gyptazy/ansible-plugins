@@ -77,6 +77,7 @@ options:
     default: present
 author:
 - Adam Hamsik (@haad)
+- Florian Paul Azim Hoberg (@gyptazy)
 '''
 
 EXAMPLES = '''

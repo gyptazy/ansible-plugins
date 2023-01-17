@@ -1,9 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright (c) 2018, Florian Paul Hoberg <florian.hoberg@credativ.de>
-# Written by Florian Paul Hoberg <florian.hoberg@credativ.de>
-
+# Copyright (c) 2018, Florian Paul Azim Hoberg @gyptazy <gyptazy@gyptazy.ch>
 # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -31,7 +29,7 @@ requirements:
 - clamav
 - freshclam
 author:
-    - '"Florian Paul Hoberg (@florianpaulhoberg)" <florian.hoberg@credativ.de>'
+    - Florian Paul Azim Hoberg (@gyptazy)
 '''
 
 EXAMPLES = '''
