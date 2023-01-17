@@ -21,6 +21,14 @@ options:
       - Path to a pf rule set.
     type: str
     required: true
+  filter:
+    description:
+      - If state is C(filter), only filter rules will be loaded.
+      - If state is C(nat), only nat rules will be loaded.
+      - If state is C(options), only options rules will be loaded.
+    choices: [ 'filter', 'nat', 'options' ]
+    type: str
+    default: ''
   action:
     description:
       - If state is C(start), packet filter will be started.
@@ -44,9 +52,11 @@ author:
 '''
 
 EXAMPLES = r'''
-- name: Start pf
+- name: Test pf rule set
   community.general.pf:
-    action: start
+    config: /etc/pf.conf
+    action: reload
+    dry_run: True
 
 - name: Reload pf rule set
   community.general.pf:
@@ -60,6 +70,11 @@ action:
     returned: success
     type: str
     sample: started
+filter:
+    description: An output of the defined rule set filter.
+    returned: success
+    type: str
+    sample: nat
 rule_set:
     description: An output of the active rule set (only dry-run).
     returned: success
@@ -75,6 +90,7 @@ def main():
     module = AnsibleModule(
         argument_spec=dict(
             config  = dict(required=True, type='str'),
+            filter  = dict(default='', choices=['', 'filter', 'nat', 'options']),
             action  = dict(default='reload', choices=['start', 'stop', 'restart', 'reload']),
             dry_run = dict(default=False, type='bool')
         ),
@@ -82,6 +98,7 @@ def main():
     )
 
     config   = module.params['config']
+    filter   = module.params['filter']
     action   = module.params['action']
     dry_run  = module.params['dry_run']
     changed  = False
@@ -114,7 +131,7 @@ def main():
     # Note: May optionally run in dry run mode and print out
     #       the rule set in Ansible meta output
     if action == 'reload':
-        out = reload_pf(module, config, dry_run)
+        out = reload_pf(module, config, dry_run, filter)
         # Dry run will not modify the system
         if not dry_run:
             changed = True
@@ -124,6 +141,7 @@ def main():
         changed=changed,
         meta={
             "action": action,
+            "filter": filter,
             "rule_set": out
         }
     )
@@ -235,16 +253,28 @@ def restart_pf(module, active_pf):
         module.fail_json(msg=msg_err)
 
 
-def reload_pf(module, config, dry_run):
+def reload_pf(module, config, dry_run, filter):
     """ Restart packet filter (pf) """
     error=False
 
+    # Create filter object
+    filter = _set_filter_type(filter)
+
+    # We need to create a switch case for filter to avoid
+    # failing with an empty option param when invoked by
+    # ansible run_command
     if dry_run:
         # Dry run with verbose output
-        rc, out, err = module.run_command(['pfctl', '-vnf', config])
+        if filter != '':
+            rc, out, err = module.run_command(['pfctl', filter, '-vnf', config])
+        else:
+            rc, out, err = module.run_command(['pfctl', '-vnf', config])
     else:
         # Flush rule set and apply new rule set
-        rc, out, err = module.run_command(['pfctl', '-f', config])
+        if filter != '':
+            rc, out, err = module.run_command(['pfctl', filter, '-f', config])
+        else:
+            rc, out, err = module.run_command(['pfctl', '-f', config])
 
     # Validate exit code
     if rc != 0:
@@ -256,6 +286,16 @@ def reload_pf(module, config, dry_run):
         module.fail_json(msg=msg_err)
 
     return out
+
+
+def _set_filter_type(filter):
+    """ Remap and set the defined filter type for the rule set """
+    if filter == 'nat':
+        return '-N'
+    if filter == 'options':
+        return '-O'
+    if filter == 'filter':
+        return '-R'
 
 
 if __name__ == '__main__':
