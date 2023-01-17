@@ -86,7 +86,7 @@ from ansible.module_utils.basic import AnsibleModule
 
 
 def main():
-    """ start main program to add/remove a package to yum versionlock"""
+    """ start main program to manage packet filter (pf) """
     module = AnsibleModule(
         argument_spec=dict(
             config  = dict(required=True, type='str'),
@@ -136,7 +136,6 @@ def main():
         if not dry_run:
             changed = True
     
-
     module.exit_json(
         changed=changed,
         meta={
