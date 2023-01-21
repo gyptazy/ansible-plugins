@@ -11,7 +11,7 @@ __metaclass__ = type
 DOCUMENTATION = r'''
 ---
 module: pf
-version_added: 2.0.0
+version_added: 6.3.0
 short_description: Manage BSD Packet Filter (pf)
 description:
     - This module manages the BSD Packet Filter (pf).
@@ -19,32 +19,40 @@ options:
   config:
     description:
       - Path to a pf rule set.
-    type: str
+    type: path
     required: true
   filter:
     description:
+      - If state is C(ignore), filters are ignored.
       - If state is C(filter), only filter rules will be loaded.
       - If state is C(nat), only nat rules will be loaded.
       - If state is C(options), only options rules will be loaded.
-    choices: [ 'filter', 'nat', 'options' ]
+    choices: [ 'ignore', 'filter', 'nat', 'options' ]
     type: str
-    default: ''
-  action:
+    default: ignore
+  state:
     description:
-      - If state is C(start), packet filter will be started.
-      - If state is C(stop), packet filter will be stopped.
-      - If state is C(restart), packet filter will be restarted.
-      - If state is C(reload), packet filter will be reloaded/flushed.
-    choices: [ 'start', 'stop', 'restart', 'reload' ]
+      - If state is C(started), packet filter will be started.
+      - If state is C(stopped), packet filter will be stopped.
+      - If state is C(restarted), packet filter will be restarted.
+      - If state is C(reloaded), packet filter will be reloaded/flushed.
+    choices: [ 'started', 'stopped', 'restarted', 'reloaded' ]
     type: str
     default: reload
   dry_run:
     description:
-      - Run pfctl with dry run option (rule set provided in meta output)
+      - Run C(pfctl) with dry-run option and provides it in meta output.
     type: bool
+    default: False
 notes:
   - Supports only BSD
-  - Supports C(check_mode).
+extends_documentation_fragment:
+  - community.general.attributes
+attributes:
+  check_mode:
+    support: full
+  diff_mode:
+    support: none
 requirements:
   - pf
 author:
@@ -55,18 +63,18 @@ EXAMPLES = r'''
 - name: Test pf rule set
   community.general.pf:
     config: /etc/pf.conf
-    action: reload
-    dry_run: True
+    state: reloaded
+    dry_run: true
 
 - name: Reload pf rule set
   community.general.pf:
     config: /etc/pf.conf
-    action: reload
+    state: reloaded
 '''
 
 RETURN = r'''
-action:
-    description: An output of the performed action.
+state:
+    description: An output of the desired state.
     returned: success
     type: str
     sample: started
@@ -89,67 +97,68 @@ def main():
     """ start main program to manage packet filter (pf) """
     module = AnsibleModule(
         argument_spec=dict(
-            config  = dict(required=True, type='str'),
-            filter  = dict(default='', choices=['', 'filter', 'nat', 'options']),
-            action  = dict(default='reload', choices=['start', 'stop', 'restart', 'reload']),
-            dry_run = dict(default=False, type='bool')
+            config=dict(required=True, type='path'),
+            filter=dict(default='ignore', choices=['ignore', 'filter', 'nat', 'options']),
+            state=dict(default='reloaded', choices=['started', 'stopped', 'restarted', 'reloaded']),
+            dry_run=dict(default=False, type='bool')
         ),
         supports_check_mode=True
     )
 
-    config   = module.params['config']
-    filter   = module.params['filter']
-    action   = module.params['action']
-    dry_run  = module.params['dry_run']
-    changed  = False
-    out      = "No information available for this action."
+    config = module.params['config']
+    filter = module.params['filter']
+    state = module.params['state']
+    dry_run = module.params['dry_run']
+    changed = False
+    out = "No information available for this state."
 
     # Validate for a supported OS
-    validate(module)
+    validate(module, config)
     # Get current status of packet filter (pf)
     active_pf = status_pf(module)
 
-    # Perform user defined actions
+    # Perform user defined and desired state
     # Start packet filter (pf) only if it is currently not running
-    if action == 'start':
+    if state == 'started':
         if not active_pf:
             start_pf(module, active_pf)
             changed = True
 
     # Stop packet filter (pf) only it is currently running
-    if action == 'stop':
+    if state == 'stopped':
         if active_pf:
             stop_pf(module, active_pf)
             changed = True
 
     # Restart of packet filter (pf) can always be performed
-    if action == 'restart':
+    if state == 'restarted':
         restart_pf(module, active_pf)
         changed = True
 
     # Reload/Flush the defined rule set for packet filter (pf)
     # Note: May optionally run in dry run mode and print out
     #       the rule set in Ansible meta output
-    if action == 'reload':
+    if state == 'reloaded':
         out = reload_pf(module, config, dry_run, filter)
         # Dry run will not modify the system
         if not dry_run:
             changed = True
-    
+
     module.exit_json(
         changed=changed,
         meta={
-            "action": action,
+            "state": state,
             "filter": filter,
             "rule_set": out
         }
     )
 
 
-def validate(module):
+def validate(module, config):
     """ Run basic validations """
     _validate_os(module)
     _validate_pf(module)
+    _validate_pf_config(module, config)
 
 
 def _validate_os(module):
@@ -157,9 +166,9 @@ def _validate_os(module):
     rc, out, err = module.run_command(['cat', '/etc/os-release'])
 
     # Validate for a BSD string in output
-    if not 'BSD' in out:
+    if 'BSD' not in out:
         msg_err = 'Error: Unsupported OS. This can only be used on BSD systems.'
-        module.fail_json(msg=msg_err)       
+        module.fail_json(msg=msg_err)
 
 
 def _validate_pf(module):
@@ -169,6 +178,16 @@ def _validate_pf(module):
     # Validate exit code
     if rc != 0:
         msg_err = 'Error: Unable to find pfctl binary.'
+        module.fail_json(msg=msg_err)
+
+
+def _validate_pf_config(module, config):
+    """ Validate if the defined config is present """
+    rc, out, err = module.run_command(['ls', config])
+
+    # Fail if no config file is present
+    if rc != 0:
+        msg_err = f'Error: Config file does not exist: {config}'
         module.fail_json(msg=msg_err)
 
 
@@ -186,7 +205,7 @@ def status_pf(module):
 def start_pf(module, active_pf):
     """ Start packet filter (pf) if not already running """
     exec_opt = 'start'
-    error=False
+    error = False
 
     rc, out, err = module.run_command(['service', 'pf', exec_opt])
 
@@ -194,8 +213,8 @@ def start_pf(module, active_pf):
     if rc != 0:
         error = True
 
-    # Validate for status change to make sure the action
-    # has been performed
+    # Validate for status change to make sure the desired
+    # state has been reached
     new_active_pf = status_pf(module)
     if new_active_pf == active_pf:
         error = True
@@ -209,7 +228,7 @@ def start_pf(module, active_pf):
 def stop_pf(module, active_pf):
     """ Stop packet filter (pf) if not already stopped """
     exec_opt = 'stop'
-    error=False
+    error = False
 
     rc, out, err = module.run_command(['service', 'pf', exec_opt])
 
@@ -217,8 +236,8 @@ def stop_pf(module, active_pf):
     if rc != 0:
         error = True
 
-    # Validate for status change to make sure the action
-    # has been performed
+    # Validate for status change to make sure the desired
+    # state has been reached
     new_active_pf = status_pf(module)
     if new_active_pf == active_pf:
         error = True
@@ -232,7 +251,7 @@ def stop_pf(module, active_pf):
 def restart_pf(module, active_pf):
     """ Restart packet filter (pf) """
     exec_opt = 'restart'
-    error=False
+    error = False
 
     rc, out, err = module.run_command(['service', 'pf', exec_opt])
 
@@ -240,8 +259,8 @@ def restart_pf(module, active_pf):
     if rc != 0:
         error = True
 
-    # Validate for status change to make sure the action
-    # has been performed
+    # Validate for status change to make sure the desired
+    # state has been reached
     new_active_pf = status_pf(module)
     if new_active_pf != active_pf:
         error = True
@@ -254,7 +273,7 @@ def restart_pf(module, active_pf):
 
 def reload_pf(module, config, dry_run, filter):
     """ Restart packet filter (pf) """
-    error=False
+    error = False
 
     # Create filter object
     filter = _set_filter_type(filter)
@@ -264,13 +283,13 @@ def reload_pf(module, config, dry_run, filter):
     # ansible run_command
     if dry_run:
         # Dry run with verbose output
-        if filter != '':
+        if filter != 'ignore':
             rc, out, err = module.run_command(['pfctl', filter, '-vnf', config])
         else:
             rc, out, err = module.run_command(['pfctl', '-vnf', config])
     else:
         # Flush rule set and apply new rule set
-        if filter != '':
+        if filter != 'ignore':
             rc, out, err = module.run_command(['pfctl', filter, '-f', config])
         else:
             rc, out, err = module.run_command(['pfctl', '-f', config])
@@ -278,10 +297,10 @@ def reload_pf(module, config, dry_run, filter):
     # Validate exit code
     if rc != 0:
         error = True
-    
+
     # Exit module on failures
     if error:
-        msg_err = f'Error: Could not reload pf.'
+        msg_err = 'Error: Could not reload pf.'
         module.fail_json(msg=msg_err)
 
     return out
